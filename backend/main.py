@@ -22,7 +22,7 @@ import os
 traceback.install()
 console = Console()
 
-VERSION = "v1.0"
+VERSION = "v2.0"
 
 SQL_KEYWORDS = [
     "SELECT", "INSERT", "UPDATE", "DELETE",
@@ -36,7 +36,7 @@ SQL_KEYWORDS = [
 if __name__ == "__main__":
 
     # --------------------------
-    # Animated Startup Intro
+    # Startup Animation
     # --------------------------
     with Progress(
         SpinnerColumn(),
@@ -48,7 +48,7 @@ if __name__ == "__main__":
         time.sleep(1.5)
 
     # --------------------------
-    # Gradient ASCII Banner
+    # Gradient Banner
     # --------------------------
     fig = Figlet(font="slant")
     ascii_banner = fig.renderText("SAFE SQL")
@@ -61,12 +61,7 @@ if __name__ == "__main__":
         banner_text.append(line + "\n", style=f"bold {color}")
 
     console.print(Align.center(banner_text))
-    console.print(
-        Align.center(
-            Text(f"SAFE SQL {VERSION}", style="bold green")
-        )
-    )
-
+    console.print(Align.center(Text(f"SAFE SQL {VERSION}", style="bold green")))
     console.print()
 
     # --------------------------
@@ -80,32 +75,21 @@ if __name__ == "__main__":
         "port": "5432"
     }
 
+    db_interface = DatabaseInterface(db_config)
+    dp_instance = privacy.DifferentialPrivacy(epsilon=1.0, total_budget=10.0)
+    eco_scheduler_instance = EcoScheduler(query_buffer_size=5)
+
+    total_queries = 0
+    total_emissions = 0.0
+    total_execution_time = 0.0
+
     diagnostics = Table(show_header=False, box=None)
     diagnostics.add_column("Component", style="bold")
     diagnostics.add_column("Status")
 
-    # DB Check
-    try:
-        db_interface = DatabaseInterface(db_config)
-        diagnostics.add_row("Database Connection", "[green]✓ Connected[/green]")
-    except Exception:
-        diagnostics.add_row("Database Connection", "[red]✗ Failed[/red]")
-        console.print(Panel(diagnostics, title="Startup Diagnostics", border_style="red"))
-        exit()
-
-    # Privacy Check
-    try:
-        dp_instance = privacy.DifferentialPrivacy(epsilon=1.0)
-        diagnostics.add_row("Differential Privacy", "[green]✓ Ready[/green]")
-    except Exception:
-        diagnostics.add_row("Differential Privacy", "[red]✗ Failed[/red]")
-
-    # Tracker Check
-    try:
-        eco_scheduler_instance = EcoScheduler(query_buffer_size=5)
-        diagnostics.add_row("Energy Tracker", "[green]✓ Ready[/green]")
-    except Exception:
-        diagnostics.add_row("Energy Tracker", "[red]✗ Failed[/red]")
+    diagnostics.add_row("Database Connection", "[green]✓ Connected[/green]")
+    diagnostics.add_row("Differential Privacy", "[green]✓ Ready[/green]")
+    diagnostics.add_row("Energy Tracker", "[green]✓ Ready[/green]")
 
     console.print(Panel(diagnostics, title="Startup Diagnostics", border_style="green"))
 
@@ -121,14 +105,11 @@ if __name__ == "__main__":
         table_names = []
 
     completer = WordCompleter(SQL_KEYWORDS + table_names, ignore_case=True)
-
     history_file = os.path.join(os.path.dirname(__file__), ".safe_sql_history")
     session = PromptSession(history=FileHistory(history_file))
 
-    console.print()
-
     # --------------------------
-    # Main CLI Loop
+    # CLI LOOP
     # --------------------------
     while True:
 
@@ -143,6 +124,45 @@ if __name__ == "__main__":
             console.print("[bold red]Shutting down SAFE SQL...[/bold red]")
             break
 
+        # --------------------------
+        # Runtime Commands
+        # --------------------------
+        if user_query.startswith("\\epsilon"):
+            try:
+                value = float(user_query.split()[1])
+                dp_instance.set_epsilon(value)
+                console.print(f"[green]Epsilon updated to {value}[/green]")
+            except:
+                console.print("[red]Usage: \\epsilon <value>[/red]")
+            continue
+
+        if user_query.startswith("\\mode"):
+            try:
+                mode = user_query.split()[1]
+                dp_instance.set_mode(mode)
+                console.print(f"[green]Mode switched to {mode}[/green]")
+            except:
+                console.print("[red]Usage: \\mode raw|private|audit[/red]")
+            continue
+
+        if user_query.startswith("\\metrics"):
+            metrics = dp_instance.get_metrics()
+
+            metrics_table = Table(show_header=False)
+            metrics_table.add_row("Total Queries", str(total_queries))
+            metrics_table.add_row("Total Emissions (kg CO2)", f"{total_emissions:.6f}")
+            metrics_table.add_row("Avg Execution Time (sec)", 
+                                  f"{(total_execution_time/total_queries):.4f}" if total_queries else "0")
+            metrics_table.add_row("Epsilon", str(metrics["epsilon"]))
+            metrics_table.add_row("Remaining Budget", str(metrics["remaining_budget"]))
+            metrics_table.add_row("Mode", metrics["mode"])
+
+            console.print(Panel(metrics_table, title="Live Metrics Dashboard", border_style="cyan"))
+            continue
+
+        # --------------------------
+        # Execute SQL
+        # --------------------------
         try:
             with console.status("[bold green]Executing query...[/bold green]", spinner="dots"):
 
@@ -150,41 +170,47 @@ if __name__ == "__main__":
                 eco_scheduler_instance.start_tracking()
 
                 result, columns = db_interface.execute_query(user_query)
-                private_result = dp_instance.privatize_result(result)
+                privacy_output = dp_instance.process_result(result)
 
                 emissions = eco_scheduler_instance.stop_tracking()
                 end_time = time.time()
 
                 execution_time = end_time - start_time
 
-            if private_result:
-                table = Table(show_header=True, header_style="bold magenta")
+            total_queries += 1
+            total_emissions += emissions
+            total_execution_time += execution_time
 
+            if privacy_output is None:
+                console.print("[green]Query executed successfully.[/green]")
+                continue
+
+            raw = privacy_output["raw"]
+            private = privacy_output["private"]
+            noise = privacy_output["noise"]
+
+            # Display logic
+            if private:
+                table = Table(show_header=True, header_style="bold magenta")
                 for col in columns:
                     table.add_column(col)
-
-                for row in private_result:
+                for row in private:
                     table.add_row(*[str(item) for item in row])
-
                 console.print(table)
 
-                console.print(
-                    Panel.fit(
-                        f"[bold cyan]Execution Time:[/bold cyan] {execution_time:.4f} sec\n"
-                        f"[bold green]Epsilon:[/bold green] {dp_instance.epsilon}\n"
-                        f"[bold yellow]Emissions:[/bold yellow] {emissions:.6f} kg CO2",
-                        border_style="blue"
-                    )
+            if dp_instance.mode == "audit":
+                console.print(Panel(f"Raw Result:\n{raw}", border_style="yellow"))
+                console.print(Panel(f"Noise Added:\n{noise}", border_style="red"))
+
+            console.print(
+                Panel.fit(
+                    f"[bold cyan]Execution Time:[/bold cyan] {execution_time:.4f} sec\n"
+                    f"[bold green]Epsilon:[/bold green] {dp_instance.epsilon}\n"
+                    f"[bold yellow]Remaining Budget:[/bold yellow] {dp_instance.remaining_budget}\n"
+                    f"[bold magenta]Emissions:[/bold magenta] {emissions:.6f} kg CO2",
+                    border_style="blue"
                 )
-            else:
-                console.print(
-                    Panel.fit(
-                        f"[green]Query executed successfully.[/green]\n"
-                        f"[bold cyan]Execution Time:[/bold cyan] {execution_time:.4f} sec\n"
-                        f"[bold yellow]Emissions:[/bold yellow] {emissions:.6f} kg CO2",
-                        border_style="blue"
-                    )
-                )
+            )
 
         except Exception as e:
             console.print(f"[bold red]Error:[/bold red] {e}")
