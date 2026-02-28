@@ -22,7 +22,7 @@ import os
 traceback.install()
 console = Console()
 
-VERSION = "v2.0"
+VERSION = "v3.0"
 
 SQL_KEYWORDS = [
     "SELECT", "INSERT", "UPDATE", "DELETE",
@@ -48,7 +48,7 @@ if __name__ == "__main__":
         time.sleep(1.5)
 
     # --------------------------
-    # Gradient Banner
+    # Banner
     # --------------------------
     fig = Figlet(font="slant")
     ascii_banner = fig.renderText("SAFE SQL")
@@ -65,6 +65,15 @@ if __name__ == "__main__":
     console.print()
 
     # --------------------------
+    # USER LOGIN
+    # --------------------------
+    username = console.input("[bold cyan]Enter username:[/bold cyan] ").strip()
+
+    if not username:
+        console.print("[red]Username required.[/red]")
+        exit()
+
+    # --------------------------
     # System Initialization
     # --------------------------
     db_config = {
@@ -76,7 +85,9 @@ if __name__ == "__main__":
     }
 
     db_interface = DatabaseInterface(db_config)
-    dp_instance = privacy.DifferentialPrivacy(epsilon=1.0, total_budget=10.0)
+    dp_instance = privacy.DifferentialPrivacy(epsilon=1.0)
+    dp_instance.register_user(username, total_budget=10.0)
+
     eco_scheduler_instance = EcoScheduler(query_buffer_size=5)
 
     total_queries = 0
@@ -146,13 +157,17 @@ if __name__ == "__main__":
             continue
 
         if user_query.startswith("\\metrics"):
-            metrics = dp_instance.get_metrics()
+
+            metrics = dp_instance.get_metrics(username)
 
             metrics_table = Table(show_header=False)
+            metrics_table.add_row("User", username)
             metrics_table.add_row("Total Queries", str(total_queries))
             metrics_table.add_row("Total Emissions (kg CO2)", f"{total_emissions:.6f}")
-            metrics_table.add_row("Avg Execution Time (sec)", 
-                                  f"{(total_execution_time/total_queries):.4f}" if total_queries else "0")
+            metrics_table.add_row(
+                "Avg Execution Time (sec)",
+                f"{(total_execution_time/total_queries):.4f}" if total_queries else "0"
+            )
             metrics_table.add_row("Epsilon", str(metrics["epsilon"]))
             metrics_table.add_row("Remaining Budget", str(metrics["remaining_budget"]))
             metrics_table.add_row("Mode", metrics["mode"])
@@ -170,7 +185,7 @@ if __name__ == "__main__":
                 eco_scheduler_instance.start_tracking()
 
                 result, columns = db_interface.execute_query(user_query)
-                privacy_output = dp_instance.process_result(result)
+                privacy_output = dp_instance.process_result(username, user_query, result)
 
                 emissions = eco_scheduler_instance.stop_tracking()
                 end_time = time.time()
@@ -189,7 +204,6 @@ if __name__ == "__main__":
             private = privacy_output["private"]
             noise = privacy_output["noise"]
 
-            # Display logic
             if private:
                 table = Table(show_header=True, header_style="bold magenta")
                 for col in columns:
@@ -198,7 +212,7 @@ if __name__ == "__main__":
                     table.add_row(*[str(item) for item in row])
                 console.print(table)
 
-            if dp_instance.mode == "audit":
+            if dp_instance.mode == "audit" and raw is not None:
                 console.print(Panel(f"Raw Result:\n{raw}", border_style="yellow"))
                 console.print(Panel(f"Noise Added:\n{noise}", border_style="red"))
 
@@ -206,7 +220,8 @@ if __name__ == "__main__":
                 Panel.fit(
                     f"[bold cyan]Execution Time:[/bold cyan] {execution_time:.4f} sec\n"
                     f"[bold green]Epsilon:[/bold green] {dp_instance.epsilon}\n"
-                    f"[bold yellow]Remaining Budget:[/bold yellow] {dp_instance.remaining_budget}\n"
+                    f"[bold yellow]Remaining Budget:[/bold yellow] "
+                    f"{dp_instance.get_remaining_budget(username)}\n"
                     f"[bold magenta]Emissions:[/bold magenta] {emissions:.6f} kg CO2",
                     border_style="blue"
                 )
